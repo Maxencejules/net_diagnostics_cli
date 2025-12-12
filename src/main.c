@@ -1,6 +1,9 @@
 #include <stdio.h>
 #include <string.h>
 #include "dns.h"
+#include "scan.h"
+#include <stdlib.h>
+
 
 
 static void print_usage(const char *prog_name) {
@@ -63,8 +66,18 @@ int main(int argc, char *argv[]) {
             return 1;
         }
         const char *host = argv[2];
-        printf("[stub] Would run TCP port scan on host: %s\n", host);
-        return 0;
+
+        int start_port = 1;
+        int end_port = 1024;
+
+        if (argc >= 4) {
+            start_port = atoi(argv[3]);
+        }
+        if (argc >= 5) {
+            end_port = atoi(argv[4]);
+        }
+
+        return tcp_scan_range(host, start_port, end_port);
     }
 
     if (strcmp(command, "dns") == 0) {

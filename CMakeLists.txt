@@ -14,9 +14,9 @@ endif()
 add_executable(netdiag
         src/main.c
         src/dns.c
+        src/scan.c
 )
 
-# 🔹 This is the important part for Windows:
 if (WIN32)
     target_link_libraries(netdiag ws2_32)
 endif()
