@@ -1,5 +1,7 @@
 #include <stdio.h>
 #include <string.h>
+#include "dns.h"
+
 
 static void print_usage(const char *prog_name) {
     printf("netdiag - Network diagnostics CLI tool\n");
@@ -72,8 +74,7 @@ int main(int argc, char *argv[]) {
             return 1;
         }
         const char *name = argv[2];
-        printf("[stub] Would resolve DNS records for: %s\n", name);
-        return 0;
+        return dns_resolve_and_print(name);
     }
 
     fprintf(stderr, "Unknown command: %s\n\n", command);
