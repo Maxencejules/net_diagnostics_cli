@@ -13,8 +13,6 @@
 #endif
 
 static int parse_windows_loss_percent(const char *line, int *loss_percent) {
-    // Example:
-    // "    Packets: Sent = 4, Received = 4, Lost = 0 (0% loss),"
     const char *p = strchr(line, '(');
     if (!p) return 0;
     int lp = -1;
@@ -26,8 +24,6 @@ static int parse_windows_loss_percent(const char *line, int *loss_percent) {
 }
 
 static int parse_windows_rtt_line(const char *line, int *min_ms, int *max_ms, int *avg_ms) {
-    // Example:
-    // "    Minimum = 16ms, Maximum = 19ms, Average = 17ms"
     int mn = -1, mx = -1, av = -1;
     if (sscanf(line, " Minimum = %dms, Maximum = %dms, Average = %dms", &mn, &mx, &av) == 3) {
         *min_ms = mn;
@@ -38,9 +34,16 @@ static int parse_windows_rtt_line(const char *line, int *min_ms, int *max_ms, in
     return 0;
 }
 
-int ping_run_system(const char *host, int count) {
+int ping_run_system(const char *host, int count, int print_live_output, PingResult *out) {
+    if (!out) return 1;
+
+    out->exit_code = 1;
+    out->loss_percent = -1;
+    out->min_ms = -1;
+    out->max_ms = -1;
+    out->avg_ms = -1;
+
     if (!host || host[0] == '\0') {
-        fprintf(stderr, "ping: host is required\n");
         return 1;
     }
 
@@ -54,62 +57,36 @@ int ping_run_system(const char *host, int count) {
     snprintf(cmd, sizeof(cmd), "ping -c %d %s", count, host);
 #endif
 
-    printf("Running: %s\n\n", cmd);
+    if (print_live_output) {
+        printf("Running: %s\n\n", cmd);
+    }
 
     FILE *pipe = POPEN(cmd, "r");
     if (!pipe) {
-        fprintf(stderr, "ping: failed to start command\n");
         return 1;
     }
 
     char line[1024];
 
-    // Parsed metrics (when available)
-    int loss_percent = -1;
-    int min_ms = -1, max_ms = -1, avg_ms = -1;
-
     while (fgets(line, sizeof(line), pipe)) {
-        fputs(line, stdout);
+        if (print_live_output) {
+            fputs(line, stdout);
+        }
 
 #ifdef _WIN32
-        if (loss_percent < 0) {
-            (void)parse_windows_loss_percent(line, &loss_percent);
+        if (out->loss_percent < 0) {
+            (void)parse_windows_loss_percent(line, &out->loss_percent);
         }
-        if (avg_ms < 0) {
-            (void)parse_windows_rtt_line(line, &min_ms, &max_ms, &avg_ms);
+        if (out->avg_ms < 0) {
+            (void)parse_windows_rtt_line(line, &out->min_ms, &out->max_ms, &out->avg_ms);
         }
 #endif
     }
 
     int rc = PCLOSE(pipe);
 
-    printf("\n--- netdiag ping summary ---\n");
-    printf("host: %s\n", host);
-    printf("count: %d\n", count);
+    // Normalize status
+    out->exit_code = (rc == 0) ? 0 : rc;
 
-#ifdef _WIN32
-    if (loss_percent >= 0) {
-        printf("loss_percent: %d\n", loss_percent);
-    } else {
-        printf("loss_percent: (not parsed)\n");
-    }
-
-    if (avg_ms >= 0) {
-        printf("rtt_ms: min=%d max=%d avg=%d\n", min_ms, max_ms, avg_ms);
-    } else {
-        printf("rtt_ms: (not parsed)\n");
-    }
-#else
-    // We will add Linux/macOS parsing next step.
-    printf("loss_percent: (not parsed)\n");
-    printf("rtt_ms: (not parsed)\n");
-#endif
-
-    if (rc != 0) {
-        printf("status: failed (exit code %d)\n", rc);
-        return 1;
-    }
-
-    printf("status: ok\n");
-    return 0;
+    return out->exit_code == 0 ? 0 : 1;
 }
