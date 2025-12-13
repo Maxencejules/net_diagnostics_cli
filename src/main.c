@@ -124,9 +124,49 @@ int main(int argc, char *argv[]) {
             print_usage(argv[0]);
             return 1;
         }
+
         const char *name = argv[2];
-        return dns_resolve_and_print(name);
+        int json = 0;
+
+        for (int i = 3; i < argc; i++) {
+            if (strcmp(argv[i], "--json") == 0) {
+                json = 1;
+            }
+        }
+
+        DnsResult r;
+        int ok = dns_resolve(name, &r);
+
+        if (json) {
+            printf("{\"command\":\"dns\",\"name\":\"%s\",", name);
+            printf("\"status\":\"%s\",", ok == 0 ? "ok" : "failed");
+            printf("\"records\":[");
+
+            for (int i = 0; i < r.record_count; i++) {
+                printf("{\"family\":\"%s\",\"ip\":\"%s\"}",
+                       r.records[i].family,
+                       r.records[i].ip);
+                if (i + 1 < r.record_count) printf(",");
+            }
+
+            printf("]}\n");
+        } else {
+            printf("DNS results for %s:\n", name);
+
+            if (r.record_count == 0) {
+                printf("  (no records found)\n");
+            }
+
+            for (int i = 0; i < r.record_count; i++) {
+                printf("  [%s] %s\n",
+                       r.records[i].family,
+                       r.records[i].ip);
+            }
+        }
+
+        return ok;
     }
+
 
     fprintf(stderr, "Unknown command: %s\n\n", command);
     print_usage(argv[0]);
