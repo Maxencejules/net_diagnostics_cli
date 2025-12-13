@@ -14,7 +14,7 @@ static void print_usage(const char *prog_name) {
     printf("Commands:\n");
     printf("  ping   <host> [count] [--json]      Send ICMP echo requests using system ping\n");
     printf("  trace  <host>                       Trace network route to a host (to be implemented)\n");
-    printf("  scan   <host> [start] [end]         Scan TCP ports on a host (default 1-1024)\n");
+    printf("  scan   <host> [start] [end] [--json]  Scan TCP ports on a host (default 1-1024)\n");
     printf("  dns    <name>                       Resolve DNS records for a name\n");
     printf("  help                                Show this message\n");
     printf("\n");
@@ -103,19 +103,51 @@ int main(int argc, char *argv[]) {
             print_usage(argv[0]);
             return 1;
         }
+
         const char *host = argv[2];
 
         int start_port = 1;
         int end_port = 1024;
+        int json = 0;
 
-        if (argc >= 4) {
-            start_port = atoi(argv[3]);
-        }
-        if (argc >= 5) {
-            end_port = atoi(argv[4]);
+        // parse extra args: [start] [end] [--json] in any order after host
+        for (int i = 3; i < argc; i++) {
+            if (strcmp(argv[i], "--json") == 0) {
+                json = 1;
+            } else if (start_port == 1 && end_port == 1024) {
+                start_port = atoi(argv[i]);
+            } else {
+                end_port = atoi(argv[i]);
+            }
         }
 
-        return tcp_scan_range(host, start_port, end_port);
+        ScanResult r;
+        int ok = tcp_scan(host, start_port, end_port, json ? 0 : 1, &r);
+
+        if (json) {
+            printf("{\"command\":\"scan\",\"host\":\"%s\",", host);
+            printf("\"startPort\":%d,\"endPort\":%d,", start_port, end_port);
+            printf("\"status\":\"%s\",", ok == 0 ? "ok" : "failed");
+            printf("\"openPorts\":[");
+
+            for (int i = 0; i < r.open_count; i++) {
+                printf("%d", r.open_ports[i]);
+                if (i + 1 < r.open_count) printf(",");
+            }
+
+            printf("]}\n");
+        } else {
+            if (ok == 0) {
+                printf("Total open ports: %d\n", r.open_count);
+                if (r.open_count == 0) {
+                    printf("No open TCP ports found in range.\n");
+                }
+            } else {
+                printf("Scan failed.\n");
+            }
+        }
+
+        return ok;
     }
 
     if (strcmp(command, "dns") == 0) {

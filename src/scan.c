@@ -17,35 +17,33 @@
   #define CLOSESOCK close
 #endif
 
-// Set socket to non-blocking mode
 static int set_nonblocking_socket(int sock) {
 #ifdef _WIN32
     u_long mode = 1;
-    if (ioctlsocket(sock, FIONBIO, &mode) != 0) {
-        return -1;
-    }
+    if (ioctlsocket(sock, FIONBIO, &mode) != 0) return -1;
 #else
     int flags = fcntl(sock, F_GETFL, 0);
-    if (flags == -1) {
-        return -1;
-    }
-    if (fcntl(sock, F_SETFL, flags | O_NONBLOCK) == -1) {
-        return -1;
-    }
+    if (flags == -1) return -1;
+    if (fcntl(sock, F_SETFL, flags | O_NONBLOCK) == -1) return -1;
 #endif
     return 0;
 }
 
-int tcp_scan_range(const char *host, int start_port, int end_port) {
+int tcp_scan(const char *host, int start_port, int end_port, int print_live_output, ScanResult *out) {
+    if (!host || !out) return 1;
+
+    memset(out, 0, sizeof(*out));
+    out->status = 1;
+    out->start_port = start_port;
+    out->end_port = end_port;
+
     if (start_port < 1 || end_port > 65535 || start_port > end_port) {
-        fprintf(stderr, "Invalid port range: %d-%d\n", start_port, end_port);
         return 1;
     }
 
 #ifdef _WIN32
     WSADATA wsa;
     if (WSAStartup(MAKEWORD(2,2), &wsa) != 0) {
-        fprintf(stderr, "WSAStartup failed\n");
         return 1;
     }
 #endif
@@ -58,25 +56,20 @@ int tcp_scan_range(const char *host, int start_port, int end_port) {
     hints.ai_protocol = IPPROTO_TCP;
 
     struct addrinfo *res = NULL;
-    int ret = getaddrinfo(host, NULL, &hints, &res);
-    if (ret != 0 || res == NULL) {
+    int r = getaddrinfo(host, NULL, &hints, &res);
+    if (r != 0 || res == NULL) {
 #ifdef _WIN32
-        fprintf(stderr, "getaddrinfo failed for '%s': %d\n", host, WSAGetLastError());
         WSACleanup();
-#else
-        fprintf(stderr, "getaddrinfo failed for '%s': %s\n", host, gai_strerror(ret));
 #endif
         return 1;
     }
 
-    // Choose the first usable address
+    // choose first IPv4/IPv6 address
     struct addrinfo *ai = res;
     while (ai && !(ai->ai_family == AF_INET || ai->ai_family == AF_INET6)) {
         ai = ai->ai_next;
     }
-
     if (!ai) {
-        fprintf(stderr, "No usable address found for %s\n", host);
         freeaddrinfo(res);
 #ifdef _WIN32
         WSACleanup();
@@ -84,37 +77,26 @@ int tcp_scan_range(const char *host, int start_port, int end_port) {
         return 1;
     }
 
-    char addr_str[INET6_ADDRSTRLEN];
-    void *addr_ptr = NULL;
-    if (ai->ai_family == AF_INET) {
-        struct sockaddr_in *ipv4 = (struct sockaddr_in *) ai->ai_addr;
-        addr_ptr = &ipv4->sin_addr;
-    } else {
-        struct sockaddr_in6 *ipv6 = (struct sockaddr_in6 *) ai->ai_addr;
-        addr_ptr = &ipv6->sin6_addr;
-    }
-    inet_ntop(ai->ai_family, addr_ptr, addr_str, sizeof(addr_str));
-
-    printf("TCP scan on %s (%s) ports %d-%d\n", host, addr_str, start_port, end_port);
-
-    // Copy base address into a modifiable struct
+    // store base address
     struct sockaddr_storage base_addr;
     memset(&base_addr, 0, sizeof(base_addr));
     memcpy(&base_addr, ai->ai_addr, ai->ai_addrlen);
     socklen_t addr_len = (socklen_t)ai->ai_addrlen;
 
+    int family = ai->ai_family;
+
     freeaddrinfo(res);
 
-    int open_count = 0;
+    if (print_live_output) {
+        printf("TCP scan on %s ports %d-%d\n", host, start_port, end_port);
+    }
 
     for (int port = start_port; port <= end_port; ++port) {
-        int sock = (int)socket(ai->ai_family, SOCK_STREAM, IPPROTO_TCP);
-        if (sock < 0) {
-            continue;
-        }
+        int sock = (int)socket(family, SOCK_STREAM, IPPROTO_TCP);
+        if (sock < 0) continue;
 
-        // Set port for this attempt
-        if (ai->ai_family == AF_INET) {
+        // set port
+        if (family == AF_INET) {
             struct sockaddr_in *ipv4 = (struct sockaddr_in *)&base_addr;
             ipv4->sin_port = htons((unsigned short)port);
         } else {
@@ -128,24 +110,25 @@ int tcp_scan_range(const char *host, int start_port, int end_port) {
         }
 
         int c = connect(sock, (struct sockaddr *)&base_addr, addr_len);
+
         if (c == 0) {
-            // Connected immediately
-            printf("  [OPEN]  TCP %d\n", port);
-            open_count++;
+            // open immediately
+            if (out->open_count < SCAN_MAX_OPEN_PORTS) {
+                out->open_ports[out->open_count++] = port;
+            }
+            if (print_live_output) {
+                printf("  [OPEN] TCP %d\n", port);
+            }
             CLOSESOCK(sock);
             continue;
         }
 
-        // On non-blocking sockets, connect will "fail" with in-progress
 #ifdef _WIN32
         int err = WSAGetLastError();
         if (err != WSAEWOULDBLOCK && err != WSAEINPROGRESS && err != WSAEALREADY) {
             CLOSESOCK(sock);
             continue;
         }
-#else
-        // POSIX: EINPROGRESS is expected
-        // We don't check errno here; select will tell us
 #endif
 
         fd_set writefds;
@@ -154,7 +137,7 @@ int tcp_scan_range(const char *host, int start_port, int end_port) {
 
         struct timeval tv;
         tv.tv_sec = 0;
-        tv.tv_usec = 300000; // 300ms timeout
+        tv.tv_usec = 300000; // 300ms
 
         int sret = select(sock + 1, NULL, &writefds, NULL, &tv);
         if (sret > 0 && FD_ISSET(sock, &writefds)) {
@@ -162,19 +145,19 @@ int tcp_scan_range(const char *host, int start_port, int end_port) {
             socklen_t len = sizeof(so_error);
             getsockopt(sock, SOL_SOCKET, SO_ERROR, (char *)&so_error, &len);
             if (so_error == 0) {
-                printf("  [OPEN]  TCP %d\n", port);
-                open_count++;
+                if (out->open_count < SCAN_MAX_OPEN_PORTS) {
+                    out->open_ports[out->open_count++] = port;
+                }
+                if (print_live_output) {
+                    printf("  [OPEN] TCP %d\n", port);
+                }
             }
         }
 
         CLOSESOCK(sock);
     }
 
-    if (open_count == 0) {
-        printf("No open TCP ports found in range.\n");
-    } else {
-        printf("Total open ports: %d\n", open_count);
-    }
+    out->status = 0;
 
 #ifdef _WIN32
     WSACleanup();
