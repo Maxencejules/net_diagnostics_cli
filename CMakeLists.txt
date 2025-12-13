@@ -16,6 +16,7 @@ add_executable(netdiag
         src/dns.c
         src/scan.c
         src/ping.c
+        src/report.c
 )
 
 if (WIN32)
