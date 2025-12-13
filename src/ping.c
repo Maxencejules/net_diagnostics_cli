@@ -12,12 +12,30 @@
   #define PCLOSE pclose
 #endif
 
-static void trim_newline(char *s) {
-    size_t n = strlen(s);
-    while (n > 0 && (s[n - 1] == '\n' || s[n - 1] == '\r')) {
-        s[n - 1] = '\0';
-        n--;
+static int parse_windows_loss_percent(const char *line, int *loss_percent) {
+    // Example:
+    // "    Packets: Sent = 4, Received = 4, Lost = 0 (0% loss),"
+    const char *p = strchr(line, '(');
+    if (!p) return 0;
+    int lp = -1;
+    if (sscanf(p, "(%d%% loss", &lp) == 1 && lp >= 0) {
+        *loss_percent = lp;
+        return 1;
     }
+    return 0;
+}
+
+static int parse_windows_rtt_line(const char *line, int *min_ms, int *max_ms, int *avg_ms) {
+    // Example:
+    // "    Minimum = 16ms, Maximum = 19ms, Average = 17ms"
+    int mn = -1, mx = -1, av = -1;
+    if (sscanf(line, " Minimum = %dms, Maximum = %dms, Average = %dms", &mn, &mx, &av) == 3) {
+        *min_ms = mn;
+        *max_ms = mx;
+        *avg_ms = av;
+        return 1;
+    }
+    return 0;
 }
 
 int ping_run_system(const char *host, int count) {
@@ -31,11 +49,8 @@ int ping_run_system(const char *host, int count) {
     char cmd[512];
 
 #ifdef _WIN32
-    // Windows: -n <count>
-    // Add -w <timeout_ms> later if needed
     snprintf(cmd, sizeof(cmd), "ping -n %d %s", count, host);
 #else
-    // Linux/macOS: -c <count>
     snprintf(cmd, sizeof(cmd), "ping -c %d %s", count, host);
 #endif
 
@@ -48,24 +63,22 @@ int ping_run_system(const char *host, int count) {
     }
 
     char line[1024];
-    int seen_loss = 0;
-    int seen_rtt = 0;
 
-    // We'll print the live output (good for debugging) and also extract summary lines.
+    // Parsed metrics (when available)
+    int loss_percent = -1;
+    int min_ms = -1, max_ms = -1, avg_ms = -1;
+
     while (fgets(line, sizeof(line), pipe)) {
         fputs(line, stdout);
 
-        // Heuristic extraction:
-        // Windows packet loss line often contains "Lost = X"
-        // Linux/macOS summary contains "% packet loss"
-        if (strstr(line, "Lost =") || strstr(line, "packet loss")) {
-            seen_loss = 1;
+#ifdef _WIN32
+        if (loss_percent < 0) {
+            (void)parse_windows_loss_percent(line, &loss_percent);
         }
-
-        // Linux/macOS RTT line often contains "min/avg/max"
-        if (strstr(line, "min/avg") || strstr(line, "Average =")) {
-            seen_rtt = 1;
+        if (avg_ms < 0) {
+            (void)parse_windows_rtt_line(line, &min_ms, &max_ms, &avg_ms);
         }
+#endif
     }
 
     int rc = PCLOSE(pipe);
@@ -74,20 +87,24 @@ int ping_run_system(const char *host, int count) {
     printf("host: %s\n", host);
     printf("count: %d\n", count);
 
-    if (!seen_loss) {
-        printf("loss: (not parsed)\n");
+#ifdef _WIN32
+    if (loss_percent >= 0) {
+        printf("loss_percent: %d\n", loss_percent);
     } else {
-        printf("loss: (see output above)\n");
+        printf("loss_percent: (not parsed)\n");
     }
 
-    if (!seen_rtt) {
-        printf("rtt: (not parsed)\n");
+    if (avg_ms >= 0) {
+        printf("rtt_ms: min=%d max=%d avg=%d\n", min_ms, max_ms, avg_ms);
     } else {
-        printf("rtt: (see output above)\n");
+        printf("rtt_ms: (not parsed)\n");
     }
+#else
+    // We will add Linux/macOS parsing next step.
+    printf("loss_percent: (not parsed)\n");
+    printf("rtt_ms: (not parsed)\n");
+#endif
 
-    // rc is command exit status. On many systems 0 means success.
-    // We'll treat non-zero as "ping failed".
     if (rc != 0) {
         printf("status: failed (exit code %d)\n", rc);
         return 1;
