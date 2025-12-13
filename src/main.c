@@ -1,10 +1,10 @@
 #include <stdio.h>
 #include <string.h>
-#include "dns.h"
-#include "scan.h"
 #include <stdlib.h>
 
-
+#include "dns.h"
+#include "scan.h"
+#include "ping.h"
 
 static void print_usage(const char *prog_name) {
     printf("netdiag - Network diagnostics CLI tool\n");
@@ -12,14 +12,16 @@ static void print_usage(const char *prog_name) {
     printf("  %s <command> [options]\n", prog_name);
     printf("\n");
     printf("Commands:\n");
-    printf("  ping   <host>       Send ICMP echo requests to a host (to be implemented)\n");
-    printf("  trace  <host>       Trace network route to a host (to be implemented)\n");
-    printf("  scan   <host>       Scan TCP ports on a host (to be implemented)\n");
-    printf("  dns    <name>       Resolve DNS records for a name (to be implemented)\n");
-    printf("  help                Show this message\n");
+    printf("  ping   <host> [count]  Send ICMP echo requests using system ping\n");
+    printf("  trace  <host>          Trace network route to a host (to be implemented)\n");
+    printf("  scan   <host> [start] [end]  Scan TCP ports on a host (default 1-1024)\n");
+    printf("  dns    <name>          Resolve DNS records for a name\n");
+    printf("  help                   Show this message\n");
     printf("\n");
     printf("Examples:\n");
-    printf("  %s ping example.com\n", prog_name);
+    printf("  %s ping example.com 4\n", prog_name);
+    printf("  %s scan example.com 80 90\n", prog_name);
+    printf("  %s dns google.com\n", prog_name);
     printf("  %s trace 8.8.8.8\n", prog_name);
     printf("\n");
 }
@@ -43,9 +45,15 @@ int main(int argc, char *argv[]) {
             print_usage(argv[0]);
             return 1;
         }
+
         const char *host = argv[2];
-        printf("[stub] Would run ICMP ping to host: %s\n", host);
-        return 0;
+        int count = 4;
+
+        if (argc >= 4) {
+            count = atoi(argv[3]);
+        }
+
+        return ping_run_system(host, count);
     }
 
     if (strcmp(command, "trace") == 0) {
