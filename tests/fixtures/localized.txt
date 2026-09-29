@@ -1,0 +1,2 @@
+Paquets : envoyes = 4, recus = 4, perdus = 0 (perte 0%)
+Minimum = 1ms, Maximum = 3ms, Moyenne = 2ms

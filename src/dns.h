@@ -11,6 +11,7 @@ typedef struct {
 typedef struct {
     int status;              // 0 ok, non-zero fail
     int record_count;
+    int truncated;
     DnsRecord records[DNS_MAX_RESULTS];
 } DnsResult;
 

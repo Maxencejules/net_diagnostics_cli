@@ -1,268 +1,127 @@
 #include <stdio.h>
-#include <string.h>
-#include <stdlib.h>
+#include "cli.h"
+#include "json.h"
 #include "report.h"
-#include "dns.h"
-#include "scan.h"
-#include "ping.h"
 
-static void print_usage(const char *prog_name) {
-    printf("netdiag - Network diagnostics CLI tool\n");
-    printf("Usage:\n");
-    printf("  %s <command> [options]\n", prog_name);
-    printf("\n");
-    printf("Commands:\n");
-    printf("  ping   <host> [count] [--json]      Send ICMP echo requests using system ping\n");
-    printf("  trace  <host>                       Trace network route to a host (to be implemented)\n");
-    printf("  scan   <host> [start] [end] [--json]  Scan TCP ports on a host (default 1-1024)\n");
-    printf("  dns    <name>                       Resolve DNS records for a name\n");
-    printf("  report <host> [--json]             Run DNS + ping + scan diagnostics\n");
-    printf("  help                                Show this message\n");
-    printf("\n");
-    printf("Examples:\n");
-    printf("  %s ping google.com 4\n", prog_name);
-    printf("  %s ping google.com 4 --json\n", prog_name);
-    printf("  %s scan example.com 80 90\n", prog_name);
-    printf("  %s dns google.com\n", prog_name);
-    printf("  %s trace 8.8.8.8\n", prog_name);
-    printf("\n");
+static void usage(const char *program) {
+    printf("netdiag - Network diagnostics CLI\nUsage:\n"
+           "  %s ping <host> [count] [--json]\n"
+           "  %s dns <host> [--json]\n"
+           "  %s scan <host> [start [end]] [--json]\n"
+           "  %s report <host> [count start end] [--json]\n"
+           "  %s help\n\n"
+           "Defaults: count=4, ports=1-1024. One scan port scans that port only.\n"
+           "Count: 1-100; ports: 1-65535. --json may follow the host in any position.\n",
+           program, program, program, program, program);
+}
+
+static const char *status(int code) { return code == 0 ? "ok" : "failed"; }
+
+static void dns_json(const DnsResult *r) {
+    printf("\"status\":\"%s\",\"records\":[", status(r->status));
+    for (int i = 0; i < r->record_count; ++i) {
+        if (i) putchar(',');
+        fputs("{\"family\":", stdout); json_string(stdout, r->records[i].family);
+        fputs(",\"ip\":", stdout); json_string(stdout, r->records[i].ip);
+        putchar('}');
+    }
+    printf("],\"truncated\":%s", r->truncated ? "true" : "false");
+}
+
+static void ping_json(const PingResult *r, int count) {
+    printf("\"count\":%d,\"status\":\"%s\",\"systemExitCode\":%d,\"lossPercent\":",
+           count, status(r->exit_code), r->exit_code);
+    json_metric(stdout, r->loss_percent);
+    fputs(",\"rttMs\":{\"min\":", stdout); json_metric(stdout, r->min_ms);
+    fputs(",\"max\":", stdout); json_metric(stdout, r->max_ms);
+    fputs(",\"avg\":", stdout); json_metric(stdout, r->avg_ms);
+    putchar('}');
+}
+
+static void scan_json(const ScanResult *r) {
+    printf("\"startPort\":%d,\"endPort\":%d,\"status\":\"%s\",\"openPorts\":[",
+           r->start_port, r->end_port, status(r->status));
+    for (int i = 0; i < r->open_count; ++i) {
+        if (i) putchar(',');
+        printf("%d", r->open_ports[i]);
+    }
+    printf("],\"openPortCount\":%d,\"truncated\":%s,\"probeErrors\":%d",
+           r->open_total, r->open_total > r->open_count ? "true" : "false", r->error_count);
+}
+
+static void dns_text(const DnsResult *r) {
+    printf("DNS: %s\n", status(r->status));
+    for (int i = 0; i < r->record_count; ++i)
+        printf("  [%s] %s\n", r->records[i].family, r->records[i].ip);
+    if (r->truncated) puts("  (address list truncated)");
+}
+
+static void metric_text(const char *label, double value) {
+    if (value < 0) printf("%sunknown", label);
+    else printf("%s%.3f", label, value);
+}
+
+static void ping_text(const PingResult *r) {
+    printf("Ping: %s (system exit %d)\n", status(r->exit_code), r->exit_code);
+    metric_text("  lossPercent=", r->loss_percent);
+    metric_text(" rttMs min=", r->min_ms);
+    metric_text(" max=", r->max_ms);
+    metric_text(" avg=", r->avg_ms);
+    putchar('\n');
+}
+
+static void scan_text(const ScanResult *r) {
+    printf("Scan: %s, ports %d-%d, %d open, %d probe errors\n",
+           status(r->status), r->start_port, r->end_port, r->open_total, r->error_count);
+    for (int i = 0; i < r->open_count; ++i) printf("  TCP %d open\n", r->open_ports[i]);
+    if (r->open_total > r->open_count) puts("  (open port list truncated)");
 }
 
 int main(int argc, char *argv[]) {
-    if (argc < 2) {
-        print_usage(argv[0]);
-        return 1;
-    }
-
-    const char *command = argv[1];
-
-    if (strcmp(command, "help") == 0 || strcmp(command, "--help") == 0 || strcmp(command, "-h") == 0) {
-        print_usage(argv[0]);
-        return 0;
-    }
-
-    if (strcmp(command, "ping") == 0) {
-        if (argc < 3) {
-            fprintf(stderr, "Error: ping requires a host argument.\n\n");
-            print_usage(argv[0]);
-            return 1;
-        }
-
-        const char *host = argv[2];
-        int count = 4;
-        int json = 0;
-
-        // parse extra args: [count] [--json]
-        for (int i = 3; i < argc; i++) {
-            if (strcmp(argv[i], "--json") == 0) {
-                json = 1;
-            } else {
-                // assume it's count
-                count = atoi(argv[i]);
-            }
-        }
-
-        PingResult r;
-        int ok = ping_run_system(host, count, json ? 0 : 1, &r);
-
-        if (json) {
-            printf("{\"command\":\"ping\",\"host\":\"%s\",\"count\":%d,", host, count);
-            printf("\"status\":\"%s\",", ok == 0 ? "ok" : "failed");
-            printf("\"lossPercent\":%d,", r.loss_percent);
-            printf("\"rttMs\":{\"min\":%d,\"max\":%d,\"avg\":%d}}\n", r.min_ms, r.max_ms, r.avg_ms);
-        } else {
-            printf("\n--- netdiag ping summary ---\n");
-            printf("host: %s\n", host);
-            printf("count: %d\n", count);
-
-            if (r.loss_percent >= 0) printf("loss_percent: %d\n", r.loss_percent);
-            else printf("loss_percent: (not parsed)\n");
-
-            if (r.avg_ms >= 0) printf("rtt_ms: min=%d max=%d avg=%d\n", r.min_ms, r.max_ms, r.avg_ms);
-            else printf("rtt_ms: (not parsed)\n");
-
-            printf("status: %s\n", ok == 0 ? "ok" : "failed");
-        }
-
-        return ok;
-    }
-
-    if (strcmp(command, "trace") == 0) {
-        if (argc < 3) {
-            fprintf(stderr, "Error: trace requires a host argument.\n\n");
-            print_usage(argv[0]);
-            return 1;
-        }
-        const char *host = argv[2];
-        printf("[stub] Would run traceroute to host: %s\n", host);
-        return 0;
-    }
-
-    if (strcmp(command, "scan") == 0) {
-        if (argc < 3) {
-            fprintf(stderr, "Error: scan requires a host argument.\n\n");
-            print_usage(argv[0]);
-            return 1;
-        }
-
-        const char *host = argv[2];
-
-        int start_port = 1;
-        int end_port = 1024;
-        int json = 0;
-
-        // parse extra args: [start] [end] [--json] in any order after host
-        for (int i = 3; i < argc; i++) {
-            if (strcmp(argv[i], "--json") == 0) {
-                json = 1;
-            } else if (start_port == 1 && end_port == 1024) {
-                start_port = atoi(argv[i]);
-            } else {
-                end_port = atoi(argv[i]);
-            }
-        }
-
-        ScanResult r;
-        int ok = tcp_scan(host, start_port, end_port, json ? 0 : 1, &r);
-
-        if (json) {
-            printf("{\"command\":\"scan\",\"host\":\"%s\",", host);
-            printf("\"startPort\":%d,\"endPort\":%d,", start_port, end_port);
-            printf("\"status\":\"%s\",", ok == 0 ? "ok" : "failed");
-            printf("\"openPorts\":[");
-
-            for (int i = 0; i < r.open_count; i++) {
-                printf("%d", r.open_ports[i]);
-                if (i + 1 < r.open_count) printf(",");
-            }
-
-            printf("]}\n");
-        } else {
-            if (ok == 0) {
-                printf("Total open ports: %d\n", r.open_count);
-                if (r.open_count == 0) {
-                    printf("No open TCP ports found in range.\n");
-                }
-            } else {
-                printf("Scan failed.\n");
-            }
-        }
-
-        return ok;
-    }
-
-    if (strcmp(command, "dns") == 0) {
-        if (argc < 3) {
-            fprintf(stderr, "Error: dns requires a name argument.\n\n");
-            print_usage(argv[0]);
-            return 1;
-        }
-
-        const char *name = argv[2];
-        int json = 0;
-
-        for (int i = 3; i < argc; i++) {
-            if (strcmp(argv[i], "--json") == 0) {
-                json = 1;
-            }
-        }
-
+    CliOptions o;
+    const char *error;
+    if (!cli_parse(argc, argv, &o, &error)) { fprintf(stderr, "%s\n", error); return 2; }
+    if (o.command == CMD_HELP) { usage(argv[0]); return 0; }
+    int code;
+    if (o.json) {
+        const char *commands[] = { "help", "ping", "dns", "scan", "report" };
+        printf("{\"schemaVersion\":1,\"command\":\"%s\",\"%s\":", commands[o.command],
+               o.command == CMD_DNS ? "name" : "host");
+        json_string(stdout, o.host);
+        putchar(',');
+    } else printf("Host: %s\n", o.host);
+    switch (o.command) {
+    case CMD_DNS: {
         DnsResult r;
-        int ok = dns_resolve(name, &r);
-
-        if (json) {
-            printf("{\"command\":\"dns\",\"name\":\"%s\",", name);
-            printf("\"status\":\"%s\",", ok == 0 ? "ok" : "failed");
-            printf("\"records\":[");
-
-            for (int i = 0; i < r.record_count; i++) {
-                printf("{\"family\":\"%s\",\"ip\":\"%s\"}",
-                       r.records[i].family,
-                       r.records[i].ip);
-                if (i + 1 < r.record_count) printf(",");
-            }
-
-            printf("]}\n");
-        } else {
-            printf("DNS results for %s:\n", name);
-
-            if (r.record_count == 0) {
-                printf("  (no records found)\n");
-            }
-
-            for (int i = 0; i < r.record_count; i++) {
-                printf("  [%s] %s\n",
-                       r.records[i].family,
-                       r.records[i].ip);
-            }
-        }
-
-        return ok;
+        code = dns_resolve(o.host, &r);
+        if (o.json) dns_json(&r); else dns_text(&r);
+        break;
     }
-
-    if (strcmp(command, "report") == 0) {
-        if (argc < 3) {
-            fprintf(stderr, "Error: report requires a host argument.\n\n");
-            print_usage(argv[0]);
-            return 1;
-        }
-
-        const char *host = argv[2];
-        int json = 0;
-
-        // defaults
-        int ping_count = 4;
-        int scan_start = 1;
-        int scan_end = 1024;
-
-        for (int i = 3; i < argc; i++) {
-            if (strcmp(argv[i], "--json") == 0) {
-                json = 1;
-            }
-        }
-
+    case CMD_PING: {
+        PingResult r;
+        code = ping_run_system(o.host, o.count, !o.json, &r);
+        if (o.json) ping_json(&r, o.count); else ping_text(&r);
+        break;
+    }
+    case CMD_SCAN: {
+        ScanResult r;
+        code = tcp_scan(o.host, o.start_port, o.end_port, !o.json, &r);
+        if (o.json) scan_json(&r); else scan_text(&r);
+        break;
+    }
+    case CMD_REPORT: {
         ReportResult r;
-        int ok = run_report(host, ping_count, scan_start, scan_end, &r);
-
-        if (json) {
-            printf("{\"command\":\"report\",\"host\":\"%s\",", host);
-            printf("\"dns\":{\"records\":%d},", r.dns.record_count);
-            printf("\"ping\":{\"lossPercent\":%d,\"rttAvg\":%d},",
-                   r.ping.loss_percent, r.ping.avg_ms);
-            printf("\"scan\":{\"openPorts\":%d},", r.scan.open_count);
-            printf("\"status\":\"%s\"}\n", ok == 0 ? "ok" : "failed");
-        } else {
-            printf("\n--- netdiag report ---\n");
-            printf("Host: %s\n\n", host);
-
-            printf("[DNS]\n");
-            for (int i = 0; i < r.dns.record_count; i++) {
-                printf("  [%s] %s\n",
-                       r.dns.records[i].family,
-                       r.dns.records[i].ip);
-            }
-
-            printf("\n[Ping]\n");
-            printf("  loss: %d%%\n", r.ping.loss_percent);
-            printf("  rtt: min=%d max=%d avg=%d ms\n",
-                   r.ping.min_ms, r.ping.max_ms, r.ping.avg_ms);
-
-            printf("\n[Scan]\n");
-            if (r.scan.open_count == 0) {
-                printf("  no open ports found\n");
-            } else {
-                for (int i = 0; i < r.scan.open_count; i++) {
-                    printf("  TCP %d open\n", r.scan.open_ports[i]);
-                }
-            }
-
-            printf("\nStatus: %s\n", ok == 0 ? "ok" : "failed");
-        }
-
-        return ok;
+        code = run_report(o.host, o.count, o.start_port, o.end_port, &r);
+        if (o.json) {
+            fputs("\"dns\":{", stdout); dns_json(&r.dns);
+            fputs("},\"ping\":{", stdout); ping_json(&r.ping, o.count);
+            fputs("},\"scan\":{", stdout); scan_json(&r.scan);
+            printf("},\"status\":\"%s\"", status(code));
+        } else { dns_text(&r.dns); ping_text(&r.ping); scan_text(&r.scan); printf("Status: %s\n", status(code)); }
+        break;
     }
-
-    fprintf(stderr, "Unknown command: %s\n\n", command);
-    print_usage(argv[0]);
-    return 1;
+    default: return 2;
+    }
+    if (o.json) puts("}");
+    return code == 0 ? 0 : 1;
 }
