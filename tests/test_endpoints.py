@@ -1,4 +1,9 @@
 """Native CLI integration tests. Servers and diagnostic traffic stay on loopback."""
+import faulthandler
+
+if __name__ == "__main__":
+    faulthandler.dump_traceback_later(20, repeat=True)
+
 import contextlib
 import http.server
 import json
@@ -180,4 +185,7 @@ class EndpointTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    try:
+        unittest.main(verbosity=2)
+    finally:
+        faulthandler.cancel_dump_traceback_later()
