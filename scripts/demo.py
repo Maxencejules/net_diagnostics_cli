@@ -3,6 +3,7 @@ import argparse
 import http.server
 import json
 from pathlib import Path
+import socketserver
 import subprocess
 import threading
 import urllib.request
@@ -30,7 +31,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
         pass
 
 
-server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+class LoopbackHTTPServer(http.server.ThreadingHTTPServer):
+    def server_bind(self):
+        # The numeric demo endpoint does not need HTTPServer's reverse DNS lookup.
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+
+
+server = LoopbackHTTPServer(("127.0.0.1", 0), Handler)
 thread = threading.Thread(target=server.serve_forever, daemon=True)
 thread.start()
 try:

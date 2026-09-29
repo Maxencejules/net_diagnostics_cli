@@ -6,15 +6,19 @@ if __name__ == "__main__":
 
 import contextlib
 import http.server
+import io
 import json
 import os
 from pathlib import Path
+import runpy
 import socket
+import socketserver
 import subprocess
 import sys
 import tempfile
 import threading
 import unittest
+from unittest import mock
 import urllib.request
 
 EXE = str(Path(sys.argv.pop(1)).resolve())
@@ -44,6 +48,11 @@ class HealthHandler(http.server.BaseHTTPRequestHandler):
 def endpoint(family=socket.AF_INET):
     class Server(http.server.ThreadingHTTPServer):
         address_family = family
+
+        def server_bind(self):
+            # Numeric loopback endpoints do not need HTTPServer's reverse DNS lookup.
+            socketserver.TCPServer.server_bind(self)
+            self.server_name, self.server_port = self.server_address[:2]
 
     address = "127.0.0.1" if family == socket.AF_INET else "::1"
     server = Server((address, 0), HealthHandler)
@@ -75,6 +84,25 @@ def fake_ping(text, code):
 
 
 class EndpointTests(unittest.TestCase):
+    def test_loopback_http_and_demo_do_not_require_reverse_dns(self):
+        with mock.patch("socket.getfqdn", side_effect=AssertionError("Unexpected reverse DNS lookup")):
+            with self.subTest(server="endpoint"):
+                with endpoint() as (host, port):
+                    with urllib.request.urlopen(f"http://{host}:{port}/health", timeout=3) as response:
+                        self.assertEqual(response.status, 200)
+                        self.assertEqual(json.load(response), {"status": "ok"})
+            with self.subTest(server="demo"):
+                demo = Path(__file__).resolve().parent.parent / "scripts" / "demo.py"
+                with mock.patch.object(sys, "argv", [str(demo), "--exe", EXE]), \
+                        contextlib.redirect_stdout(io.StringIO()) as stdout:
+                    with self.assertRaises(SystemExit) as exit_status:
+                        runpy.run_path(str(demo), run_name="__main__")
+                    self.assertEqual(exit_status.exception.code, 0)
+                output = json.loads(stdout.getvalue())
+                self.assertEqual(output["httpStatus"], 200)
+                self.assertEqual(output["httpHealth"], {"status": "ok"})
+                self.assertEqual(output["report"]["status"], "ok")
+
     def test_ipv4_http_listener_open_and_reserved_nonlistener_not_open(self):
         with endpoint() as (host, port), socket.socket() as closed:
             # A bound, non-listening socket reserves a stable port without accepting connections.
