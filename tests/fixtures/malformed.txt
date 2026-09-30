@@ -1,0 +1,7 @@
+garbage (25% jitter) loss
+4 packets transmitted, 0 received, 101% packet loss
+4 packets transmitted, 0 received, nan% packet loss
+rtt min/avg/max/mdev = 3.0/2.0/1.0/0.0 ms
+Minimum = -1ms, Maximum = 3ms, Average = 2ms
+Minimum = 1ms, Maximum = 3ms, Average = nanms
+rtt min/avg/max/mdev = 1/2/3/nope ms

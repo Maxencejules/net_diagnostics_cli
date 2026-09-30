@@ -1,0 +1,36 @@
+name: Build and test
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            flags: -Werror
+          - os: macos-latest
+            flags: -Werror
+          - os: windows-latest
+            flags: /WX
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install system ping on Linux
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y iputils-ping
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_FLAGS="${{ matrix.flags }}"
+      - name: Build
+        run: cmake --build build --config Release --parallel 2
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure
+      - name: Run local demo
+        run: python scripts/demo.py

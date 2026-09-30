@@ -8,6 +8,8 @@ typedef struct {
     int start_port;
     int end_port;
     int open_count;
+    int open_total;               // Includes open ports beyond the stored list.
+    int error_count;              // Local socket/select errors, not closed ports.
     int open_ports[SCAN_MAX_OPEN_PORTS];
 } ScanResult;
 
